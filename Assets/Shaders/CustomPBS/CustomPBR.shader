@@ -4,11 +4,11 @@ Shader "CustomPBS/CustomPBR"
     {
         // Color和MainTex(ALbedo) 控制漫反射项的颜色 
         _Color ("Color", Color) = (1, 1, 1, 1)
-        _MainTex ("Albedo", 2D) = "white" {}
+        _MainTex ("Albedo", 2D) = "white" {} // 注意 面板上不选的话, MainTex是白色
         // 光滑度/粗糙度 roughness = (1-smoothness)  roughness^2 计算BRDF中的高光项中的几何函数和法线分布函数
         _Glossiness ("Smoothness", Range(0.0,1.0)) = 0.5 
         // 高光颜色
-        _SpecColor ("Specular", Color) = (0.2, 0.2, 0.2)
+        _SpecularColor ("Specular", Color) = (0.2, 0.2, 0.2)
         // 高光反射图(金属工作流中 albedo漫反射颜色决定非金属材质的颜色, specular高光反射颜色决定金属材质的颜色)
         _SpecGlossMap ("Specular(RGB) Smoothness(A)", 2D) = "white" {} 
         // 法线 凹凸程度
@@ -42,21 +42,21 @@ Shader "CustomPBS/CustomPBR"
 
             struct appdata
             {
-                float4 vertex : POSITION;
-                float2 uv : TEXCOORD0;
-                float3 normal : NORMAL;
-                float4 tangent : TANGENT;
+                float4 vertex  : POSITION ;
+                float3 normal  : NORMAL   ;
+                float4 tangent : TANGENT  ;
+                float2 uv      : TEXCOORD0;
             };
 
             struct v2f
             {
-                float4 pos : SV_POSITION;
-                float2 uv : TEXCOORD0;
-                float4 TtoW0: TEXCOORD1;
-                float4 TtoW1: TEXCOORD2;
-                float4 TtoW2: TEXCOORD3;
+                float4 pos    : SV_POSITION;
+                float2 uv     : TEXCOORD0;
+                float4 TtoW0  : TEXCOORD1;
+                float4 TtoW1  : TEXCOORD2;
+                float4 TtoW2  : TEXCOORD3;
                 SHADOW_COORDS(4)            // AutoLight.cginc 阴影 
-                UNITY_FOG_COORDS(5)
+                UNITY_FOG_COORDS(5)         // UnityCG.cginc
             };
 
 
@@ -65,7 +65,7 @@ Shader "CustomPBS/CustomPBR"
             float4 _MainTex_ST;
 
             float _Glossiness;
-            //float3 _SpecColor;
+            float3 _SpecularColor; // Properties中的_SpecColor变量名会产生命名冲突，所以改成了_SpecularColor
             sampler2D _SpecGlossMap;
             float4 _SpecGlossMap_ST;
 
@@ -84,7 +84,7 @@ Shader "CustomPBS/CustomPBR"
                 UNITY_INITIALIZE_OUTPUT(v2f, o); // HLSLSupport.cginc 初始化输出变量 
 
 
-                o.pos = UnityObjectToClipPos(v.vertex);  // UnityCG.cginc 
+                o.pos = UnityObjectToClipPos(v.vertex);     // UnityCG.cginc 
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);       // UnityCG.cginc 
 
                 float3 worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
@@ -94,14 +94,15 @@ Shader "CustomPBS/CustomPBR"
                 // 一般法线作为z轴  切线作为x轴  所以不管左右手坐标系 都是法线cross切线 
 
                 // 在ps把凹凸map中的法线 转换到 世界坐标系 
-                o.TtoW0 = float4(worldNormal.x, worldBinormal.x, worldTangents.x, worldPos.x);
-                o.TtoW1 = float4(worldNormal.y, worldBinormal.y, worldTangents.y, worldPos.y);
-                o.TtoW2 = float4(worldNormal.z, worldBinormal.z, worldTangents.z, worldPos.z);
+                // 注意: 第一列是 切线   第二列是 副法  第三列是 法线 
+                o.TtoW0 = float4(worldTangents.x, worldBinormal.x, worldNormal.x, worldPos.x);
+                o.TtoW1 = float4(worldTangents.y, worldBinormal.y, worldNormal.y, worldPos.y);
+                o.TtoW2 = float4(worldTangents.z, worldBinormal.z, worldNormal.z, worldPos.z);
                 
 
                 TRANSFER_SHADOW(o); // 为了接收阴影 
 
-                UNITY_TRANSFER_FOG(o,o.vertex);
+                UNITY_TRANSFER_FOG(o, o.pos);
                 return o;
             }
 
@@ -120,7 +121,8 @@ Shader "CustomPBS/CustomPBR"
                 // 对于没有定义 UNITY_CONSERVE_ENERGY 都直接返回 albedo 因为下面这个公式完全可预先计算好保存到Albedo(MainTex)
                 // 定义了 UNITY_CONSERV_ENERGY 返回 return albedo * (half3(1,1,1) - specColor);  1.0减去高光反射
                 // 按这样说 ???  MainTex.rgb * _Color + SpecGLossMap.rgb*_SpecColor = 1.0 ??? 
-                return albedo ;
+                return albedo * oneMinusReflectivity; // 定义了 UNITY_CONSERVE_ENERGY_MONOCHROME 
+                // return albedo ;
             }
 
             // 对 MainTex.rgb 采样 并且乘以参数_Color.rgb 并且和 DetailAlbedoMap.rgb 以 DetailMask.a 做混合 得到慢反射颜色
@@ -138,7 +140,7 @@ Shader "CustomPBS/CustomPBR"
             inline half3 _UnpackScaleNormalRGorAG(half4 packednormal, half bumpScale)
             {
                 // #if defined(UNITY_NO_DXT5nm)  // 没有使用DXT5nm压缩 纹理保存法线的xyz 
-                half3 normal = packednormal.xyz * 2 - 1;
+                half3 normal = packednormal.xyz * 2.0 - 1.0;
                 normal.xy *= bumpScale;
                 return normal; 
                 // #else
@@ -173,22 +175,22 @@ Shader "CustomPBS/CustomPBR"
             // 考虑 逐顶点 归一化法线
             half3 NormalizePerVertexNormal(float3 n)
             {
-                #if (SHADER_TARGET < 30) 
-                    return normalize(n);
-                #else 
+                //#if (SHADER_TARGET < 30) 
+                //    return normalize(n);
+                //#else 
                     return n;
-                #endif 
+                //#endif 
             }
 
              // 考虑 逐法线 归一化法线
             float3 NormalizePerPixelNormal(float3 n )
             {
-                #if (SHADER_TARGET < 30)
-                    return n;
-                #else 
+                //#if (SHADER_TARGET < 30)
+                //    return n;
+                //#else 
                     // return normalize((float3)n); // takes float to avoid overflow  ???
                     return normalize(n);
-                #endif 
+                //#endif 
             }
 
             // 逐像素的世界法线 
@@ -207,7 +209,7 @@ Shader "CustomPBS/CustomPBR"
                 normalWorld = NormalizePerPixelNormal(normalWorld); 
 
                 // #else 
-                // return normalize(tangentToWorld[2].xyz); // 不使用法线贴图 直接返回矩阵中的法线 
+                //return normalize( float3(TtoW0.x, TtoW1.x, TtoW2.x) ); // 不使用法线贴图 直接返回矩阵中的法线 
                 return normalWorld;
             }
             
@@ -240,7 +242,7 @@ Shader "CustomPBS/CustomPBR"
                 half perceptualRoughness = 1 - glossiness;
 
                 // 高光反射颜色 
-                half3 specColor = specGloss.rgb * _SpecColor;
+                half3 specColor = specGloss.rgb * _SpecularColor;
 
                  // 计算 一减反射率, 漫反射系数（Albedo中参与漫反射的比例）
                 half oneMinusReflectivity;
@@ -297,6 +299,8 @@ Shader "CustomPBS/CustomPBR"
             {
                 return perceptualRoughness * perceptualRoughness;
             }
+
+ 
 
             inline half3 DisneyDiffuseTerm(half3 baseColor, half NdotL, half NdotV, half HdotL, half perceptualRoughness)
             {
@@ -399,9 +403,14 @@ Shader "CustomPBS/CustomPBR"
                 half4 envMap = UNITY_SAMPLE_TEXCUBE_LOD(unity_SpecCube0, s.reflectDir, mip);// HLSLSupport.cginc
                 half3 indirectSpecular = surfaceReduction * envMap.rgb * _FresnelLerp(s.specColor, grazingTerm, nv);
 
+                // nv夹角比较少, nv的值就大 , 所以返回值接近 s.specColor, 高光反射, 如果specColor值小, 那么间接光的反射就比较暗了, 相反
+                // nv夹角比较大, 返回值接近 grazingTerm(掠射角颜色, 跟光滑度成正比, 越光滑 值越大)， 如果比较光滑的话, 就会很亮了
+                // 可以对比一下 nv.xxx 和 indirectSpecular 在cube上的效果
+                // specColor比较少 光滑比较高 ?? 非金属材质 ?? 类似水 
 
+      
                 // 渲染方程 加起来 
-                half3 color = 
+                half3 color =  
                     emissionTerm + 
                     UNITY_PI * (diffuseTerm + specularTerm) * (_LightColor0.rgb  * s.atten) * nl +
                     indirectSpecular;
@@ -421,7 +430,7 @@ Shader "CustomPBS/CustomPBR"
                     + surfaceReduction * gi.specular * FresnelLerp (specColor, grazingTerm, nv); // 间接高光(菲涅尔插值) 高光颜色和掠射角颜色插值
                 */ 
 
-                UNITY_APPLY_FOG(i.fogCoord, color.rgb);
+                //UNITY_APPLY_FOG(i.fogCoord, color.rgb);
 
                 return half4(color, 1.0);
             }
